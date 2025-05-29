@@ -19,7 +19,7 @@ This is a simple simulation of an elevator system written in Go. It supports mul
 2. Navigate to the `lld-systems/systems/elevator-system/` directory.
 3. Run the program:
    ```sh
-   go run elevator.go request.go
+   go run .
    ```
 4. Follow the prompts to enter the number of elevators and requests.
 
