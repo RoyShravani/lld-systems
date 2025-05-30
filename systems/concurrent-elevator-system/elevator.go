@@ -2,7 +2,11 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"os/signal"
 	"sync"
+	"syscall"
+	"time"
 )
 
 type Direction int
@@ -62,52 +66,89 @@ func (e *Elevator) moveToFloor(dest int) {
 	fmt.Printf("Elevator %d arrived at floor %d\n", e.ID, e.CurrentFloor)
 }
 
-func findNearestElevator(elevators []*Elevator, source int) int {
-	minDist := 1 << 30
-	chosen := 0
-	for i, e := range elevators {
-		dist := e.CurrentFloor - source
-		if dist < 0 {
-			dist = -dist
-		}
-		if dist < minDist {
-			minDist = dist
-			chosen = i
-		}
-	}
-	return chosen
-}
-
 func main() {
 	var numElevators int
 	fmt.Print("Enter number of elevators: ")
-	fmt.Scan(&numElevators)
+	_, err := fmt.Scan(&numElevators)
+	if !ValidateElevatorCount(numElevators, err) {
+		return
+	}
 
 	var wg sync.WaitGroup
 	controller := NewElevatorController(numElevators, &wg)
 
+	// Graceful shutdown setup
+	shutdown := make(chan os.Signal, 1)
+	signal.Notify(shutdown, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-shutdown
+		fmt.Println("\nGraceful shutdown initiated. Closing elevator channels...")
+		for _, e := range controller.Elevators {
+			close(e.RequestCh)
+		}
+		os.Exit(0)
+	}()
+
 	var n int
 	fmt.Print("Enter number of requests: ")
-	fmt.Scan(&n)
-	requests := make([]Request, n)
+	_, err = fmt.Scan(&n)
+	if !ValidateRequestCount(n, err) {
+		return
+	}
+	requests := make([]Request, 0, n)
+	requestSet := make(map[string]struct{})
+	var minFloor, maxFloor int = -5, 100 // Set building floor range here
 	for i := 0; i < n; i++ {
 		var source, dest int
 		var dir string
 		fmt.Printf("Request %d - Enter source floor: ", i+1)
-		fmt.Scan(&source)
-		fmt.Printf("Request %d - Enter destination floor: ", i+1)
-		fmt.Scan(&dest)
-		fmt.Printf("Request %d - Enter direction (up/down): ", i+1)
-		fmt.Scan(&dir)
-		var direction Direction
-		if dir == "up" {
-			direction = Up
-		} else {
-			direction = Down
+		_, err = fmt.Scan(&source)
+		if err != nil {
+			fmt.Println("Error: Invalid input for source floor.")
+			return
 		}
-		requests[i] = Request{Source: source, Destination: dest, Direction: direction}
+		if !ValidateFloor(source, minFloor, maxFloor, "Source") {
+			return
+		}
+		fmt.Printf("Request %d - Enter destination floor: ", i+1)
+		_, err = fmt.Scan(&dest)
+		if err != nil {
+			fmt.Println("Error: Invalid input for destination floor.")
+			return
+		}
+		if !ValidateFloor(dest, minFloor, maxFloor, "Destination") {
+			return
+		}
+		fmt.Printf("Request %d - Enter direction (up/down): ", i+1)
+		_, err = fmt.Scan(&dir)
+		direction, valid := ValidateDirection(dir, err)
+		if !valid {
+			return
+		}
+		if !ValidateSourceDest(source, dest) {
+			return
+		}
+		key := fmt.Sprintf("%d-%d-%d", source, dest, direction)
+		if _, exists := requestSet[key]; exists {
+			fmt.Printf("Warning: Duplicate request from %d to %d (%s) ignored.\n", source, dest, dir)
+			continue
+		}
+		requestSet[key] = struct{}{}
+		requests = append(requests, Request{Source: source, Destination: dest, Direction: direction})
 	}
+
+	if len(requests) == 0 {
+		fmt.Println("No valid requests to process. Exiting.")
+		return
+	}
+
+	// Starvation/Deadlock detection: If all elevators are busy and requests remain unprocessed for too long, warn the user.
+	// We'll use a timer to simulate a simple starvation detection for demonstration.
+	starvationTimer := time.AfterFunc(10*time.Second, func() {
+		fmt.Println("Warning: Some requests are taking too long to process. Possible deadlock or starvation detected.")
+	})
 
 	controller.DispatchRequests(requests)
 	wg.Wait()
+	starvationTimer.Stop()
 }
